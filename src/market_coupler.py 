@@ -1,1 +1,83 @@
+import numpy as np
+import pandas as pd
+from scipy.optimize import linprog
+from src.fbmc_model import get_core_fbmc_parameters
 
+
+def clear_fbmc_market(
+    unconstrained_prices: np.ndarray,
+    timestamps: pd.DatetimeIndex,
+    ram_scale_factor: float = 1.0,
+) -> pd.DataFrame:
+    """
+    Executes hourly Flow-Based Market Coupling (FBMC) clearing
+    via Linear Programming (HiGHS) to maximize economic social welfare.
+    """
+    ptdf, base_ram, max_exp, max_imp = get_core_fbmc_parameters()
+    ram = base_ram * ram_scale_factor
+    n_zones = 4
+    n_hours = len(timestamps)
+
+    cleared_net_positions = []
+    cnec_loadings_pct = []
+    cleared_prices = []
+    congestion_rents = []
+
+    for h in range(n_hours):
+        c_obj = unconstrained_prices[h]
+
+        # 1. Global Balance: sum(NP) == 0
+        A_eq = np.ones((1, n_zones))
+        b_eq = np.zeros(1)
+
+        # 2. Forward and reverse RAM physical limits: |PTDF @ NP| <= RAM
+        A_ub = np.vstack([ptdf, -ptdf])
+        b_ub = np.concatenate([ram, ram])
+
+        bounds = [(max_imp[z], max_exp[z]) for z in range(n_zones)]
+
+        res = linprog(c_obj, A_ub=A_ub, b_ub=b_ub, A_eq=A_eq, b_eq=b_eq, bounds=bounds, method="highs")
+        if not res.success:
+            raise RuntimeError(f"FBMC Market Clearing failed at hour {h}: {res.message}")
+
+        net_pos = res.x
+        cleared_net_positions.append(net_pos)
+
+        # Interconnector physical loading
+        flows = ptdf @ net_pos
+        loading_pct = (np.abs(flows) / ram) * 100.0
+        cnec_loadings_pct.append(loading_pct)
+
+        # Price convergence & bottleneck divergence logic
+        is_congested = (loading_pct >= 99.0).any()
+        if is_congested:
+            hour_p = unconstrained_prices[h] + (net_pos / 150.0)
+        else:
+            hour_p = np.full(n_zones, np.mean(unconstrained_prices[h]))
+
+        cleared_prices.append(hour_p)
+
+        # Congestion Rent = Flow * Price Spread
+        c_rent = np.sum(np.abs(flows) * np.abs(hour_p[1:] - hour_p[0]) / 3.0)
+        congestion_rents.append(c_rent)
+
+    net_pos_arr = np.array(cleared_net_positions)
+    prices_arr = np.array(cleared_prices)
+    loadings_arr = np.array(cnec_loadings_pct)
+
+    return pd.DataFrame({
+        "timestamp": timestamps,
+        "de_net_export_mw": np.round(net_pos_arr[:, 0], 1),
+        "fr_net_export_mw": np.round(net_pos_arr[:, 1], 1),
+        "at_net_export_mw": np.round(net_pos_arr[:, 2], 1),
+        "nl_net_export_mw": np.round(net_pos_arr[:, 3], 1),
+        "de_price_eur": np.round(prices_arr[:, 0], 2),
+        "fr_price_eur": np.round(prices_arr[:, 1], 2),
+        "at_price_eur": np.round(prices_arr[:, 2], 2),
+        "nl_price_eur": np.round(prices_arr[:, 3], 2),
+        "de_fr_spread_eur": np.round(prices_arr[:, 1] - prices_arr[:, 0], 2),
+        "cnec1_de_fr_loading_pct": np.round(loadings_arr[:, 0], 1),
+        "cnec2_de_nl_loading_pct": np.round(loadings_arr[:, 1], 1),
+        "cnec3_de_at_loading_pct": np.round(loadings_arr[:, 2], 1),
+        "congestion_rent_eur": np.round(congestion_rents, 2)
+    })
