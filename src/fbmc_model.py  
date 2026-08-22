@@ -1,1 +1,26 @@
+import numpy as np
+from typing import Tuple
 
+
+def get_core_fbmc_parameters() -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Returns standard Core FBMC market coupling parameters:
+    - PTDF Matrix (3 CNECs x 4 Zones)
+    - RAM Vector (MW)
+    - Max Export Bounds (MW)
+    - Max Import Bounds (MW)
+    """
+    # 3 Critical Network Elements: DE->FR, DE->NL, DE->AT
+    ram_mw = np.array([2500.0, 1800.0, 3000.0])
+
+    # PTDF Matrix (Zone-to-Slack sensitivity: DE=0, FR=1, AT=2, NL=3)
+    ptdf_matrix = np.array([
+        [0.0, -0.72,  0.08, -0.22],
+        [0.0, -0.15,  0.05, -0.68],
+        [0.0,  0.12, -0.81,  0.05]
+    ])
+
+    max_export_mw = np.array([6000.0, 5000.0, 3500.0, 4000.0])
+    max_import_mw = np.array([-6000.0, -5000.0, -3500.0, -4000.0])
+
+    return ptdf_matrix, ram_mw, max_export_mw, max_import_mw
